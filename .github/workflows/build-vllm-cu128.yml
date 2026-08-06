@@ -1,9 +1,7 @@
-name: Build vLLM cu128 (A800 only)
+name: Build vLLM cu128 A800
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 env:
   VLLM_VERSION: "0.26.0"
@@ -12,7 +10,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 1200
+    timeout-minutes: 350
 
     container:
       image: nvidia/cuda:12.8.0-devel-ubuntu22.04
@@ -22,29 +20,28 @@ jobs:
       - name: Install system dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
-          TZ: Asia/Shanghai
         run: |
-          ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
-          echo $TZ > /etc/timezone
-
+          set -euxo pipefail
           apt-get update
-          apt-get install -y software-properties-common curl git wget \
-            build-essential ninja-build ccache
+          apt-get install -y --no-install-recommends \
+            software-properties-common \
+            ca-certificates \
+            curl \
+            git \
+            build-essential \
+            ninja-build \
+            ccache
 
           add-apt-repository -y ppa:deadsnakes/ppa
           apt-get update
-
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          apt-get install -y --no-install-recommends \
             python3.12 \
             python3.12-dev \
-            python3.12-venv \
-            python3-pip
-
-          update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
-          update-alternatives --install /usr/bin/python  python  /usr/bin/python3.12 1
+            python3.12-venv
 
           curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
-          python3 --version
+          ln -sf /usr/bin/python3.12 /usr/local/bin/python
+          ln -sf /usr/bin/python3.12 /usr/local/bin/python3
 
       - name: Checkout vLLM
         uses: actions/checkout@v4
@@ -52,56 +49,65 @@ jobs:
           repository: vllm-project/vllm
           ref: v${{ env.VLLM_VERSION }}
           path: vllm
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Install PyTorch cu128 + build tools
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/ccache
+          key: vllm-${{ env.VLLM_VERSION }}-cu128-sm80-cp312-${{ github.sha }}
+          restore-keys: |
+            vllm-${{ env.VLLM_VERSION }}-cu128-sm80-cp312-
+            vllm-${{ env.VLLM_VERSION }}-cu128-sm80-
+
+      - name: Install PyTorch and build dependencies
+        working-directory: vllm
         run: |
-          python -m pip install -U pip setuptools wheel ninja cmake packaging
-          python -m pip install torch torchvision torchaudio \
+          set -euxo pipefail
+
+          python -m pip install -U \
+            pip setuptools wheel ninja cmake packaging
+
+          python -m pip install torch \
             --index-url https://download.pytorch.org/whl/cu128
 
-      - name: Install vLLM build dependencies
-        working-directory: vllm
-        run: |
-          python -m pip install -r requirements/build.txt || true
-          python -m pip install \
-            "cmake>=3.26.1" ninja packaging setuptools-scm setuptools-rust
+          python -m pip install -r requirements/build.txt
+          python use_existing_torch.py
 
-      - name: Build wheel (A800 only)
+      - name: Build wheel
         working-directory: vllm
         env:
-          # 只编译 A800 / A100 = sm_80
+          CUDA_HOME: /usr/local/cuda
           TORCH_CUDA_ARCH_LIST: "8.0"
-          MAX_JOBS: "1"
+          MAX_JOBS: "3"
           NVCC_THREADS: "1"
-        run: |
-          # 安全地创建 swap（避免已挂载报错）
-          if ! swapon --show | grep -q '/swapfile'; then
-            rm -f /swapfile
-            fallocate -l 8G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=8192
-            chmod 600 /swapfile
-            mkswap /swapfile
-            swapon /swapfile
-          fi
-          free -h
+          CMAKE_BUILD_PARALLEL_LEVEL: "3"
 
-          python use_existing_torch.py || true
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: 5G
+          CCACHE_COMPRESS: "true"
+        run: |
+          set -euxo pipefail
+
+          ccache --zero-stats
+          ccache --max-size 5G
+
+          free -h
+          nproc
 
           python -m pip wheel . \
             --no-build-isolation \
             --no-deps \
-            -w dist \
+            --wheel-dir dist \
             -v
 
-      - name: Show result
-        run: |
-          echo "===== Built wheels ====="
-          ls -lh vllm/dist/
-          file vllm/dist/*.whl || true
+          ccache --show-stats
+          ls -lh dist
 
-      - name: Upload artifact
+      - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: vllm-${{ env.VLLM_VERSION }}-cu128-cp312-A800
+          name: vllm-${{ env.VLLM_VERSION }}-cu128-cp312-sm80
           path: vllm/dist/*.whl
           retention-days: 14
+          if-no-files-found: error
