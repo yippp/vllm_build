@@ -20,14 +20,22 @@ jobs:
 
     steps:
       - name: Install system dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          TZ: Asia/Shanghai
         run: |
+          # 避免 tzdata 卡住
+          ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
+          echo $TZ > /etc/timezone
+
           apt-get update
           apt-get install -y software-properties-common curl git wget \
             build-essential ninja-build ccache
 
           add-apt-repository -y ppa:deadsnakes/ppa
           apt-get update
-          apt-get install -y \
+
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
             python3.12 \
             python3.12-dev \
             python3.12-venv \
