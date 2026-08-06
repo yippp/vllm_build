@@ -87,6 +87,7 @@ jobs:
             --no-build-isolation \
             --no-deps \
             -w dist \
+            -v
 
       - name: Show result
         run: |
