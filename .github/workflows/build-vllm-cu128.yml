@@ -72,16 +72,21 @@ jobs:
         working-directory: vllm
         env:
           TORCH_CUDA_ARCH_LIST: "8.0;9.0"
-          MAX_JOBS: "4"
-          NVCC_THREADS: "2"
+          MAX_JOBS: "1"
+          NVCC_THREADS: "1"
         run: |
+          fallocate -l 8G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=8192
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          free -h
+
           python use_existing_torch.py || true
 
           python -m pip wheel . \
             --no-build-isolation \
             --no-deps \
             -w dist \
-            -v
 
       - name: Show result
         run: |
