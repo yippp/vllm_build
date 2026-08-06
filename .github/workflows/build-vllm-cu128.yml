@@ -1,113 +1,255 @@
-name: Build vLLM cu128 A800
+name: Build vLLM 0.26.0 CUDA 12.8 for A800
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   VLLM_VERSION: "0.26.0"
   PYTHON_VERSION: "3.12"
+  TORCH_VERSION: "2.11.0"
 
 jobs:
   build:
+    name: Build vLLM wheel
     runs-on: ubuntu-22.04
+
+    # GitHub-hosted runner 单个 job 的时间限制之内留一点清理时间
     timeout-minutes: 350
+
+    defaults:
+      run:
+        shell: bash
 
     container:
       image: nvidia/cuda:12.8.0-devel-ubuntu22.04
       options: --user root
 
     steps:
+      # CUDA 容器很精简，checkout 前先安装 git 和 Python
       - name: Install system dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -euxo pipefail
+
           apt-get update
+
           apt-get install -y --no-install-recommends \
             software-properties-common \
             ca-certificates \
             curl \
             git \
             build-essential \
+            ccache \
             ninja-build \
-            ccache
+            pkg-config
 
           add-apt-repository -y ppa:deadsnakes/ppa
           apt-get update
+
           apt-get install -y --no-install-recommends \
             python3.12 \
             python3.12-dev \
             python3.12-venv
 
-          curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
+          curl --fail --show-error --silent \
+            https://bootstrap.pypa.io/get-pip.py \
+            | python3.12
+
           ln -sf /usr/bin/python3.12 /usr/local/bin/python
           ln -sf /usr/bin/python3.12 /usr/local/bin/python3
 
-      - name: Checkout vLLM
+          python --version
+          python -m pip --version
+          nvcc --version
+          gcc --version
+          ninja --version
+          ccache --version
+
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout vLLM source
         uses: actions/checkout@v4
         with:
           repository: vllm-project/vllm
           ref: v${{ env.VLLM_VERSION }}
           path: vllm
           fetch-depth: 1
+          submodules: recursive
 
       - name: Restore ccache
-        uses: actions/cache@v4
+        id: restore-ccache
+        uses: actions/cache/restore@v4
         with:
-          path: /root/.cache/ccache
-          key: vllm-${{ env.VLLM_VERSION }}-cu128-sm80-cp312-${{ github.sha }}
+          path: /github/home/.cache/ccache
+          key: >-
+            vllm-${{ env.VLLM_VERSION }}-torch${{ env.TORCH_VERSION }}-cu128-sm80-cp312-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            vllm-${{ env.VLLM_VERSION }}-cu128-sm80-cp312-
-            vllm-${{ env.VLLM_VERSION }}-cu128-sm80-
+            vllm-${{ env.VLLM_VERSION }}-torch${{ env.TORCH_VERSION }}-cu128-sm80-cp312-${{ runner.os }}-
+            vllm-${{ env.VLLM_VERSION }}-torch${{ env.TORCH_VERSION }}-cu128-sm80-cp312-
+            vllm-${{ env.VLLM_VERSION }}-torch${{ env.TORCH_VERSION }}-cu128-sm80-
 
       - name: Install PyTorch and build dependencies
         working-directory: vllm
         run: |
           set -euxo pipefail
 
-          python -m pip install -U \
-            pip setuptools wheel ninja cmake packaging
+          python -m pip install --upgrade \
+            pip \
+            wheel
 
-          python -m pip install torch \
+          # vLLM 0.26.0 的 pyproject.toml 和构建依赖明确要求
+          # torch==2.11.0。这里指定 CUDA 12.8 wheel 源。
+          python -m pip install \
+            "torch==${TORCH_VERSION}" \
             --index-url https://download.pytorch.org/whl/cu128
 
-          python -m pip install -r requirements/build.txt
-          python use_existing_torch.py
+          # 先删除源码构建配置中的 torch 依赖，防止后续 pip
+          # 从其他索引重新安装或替换已经安装的 cu128 PyTorch。
+          python use_existing_torch.py --prefix
 
-      - name: Build wheel
+          # vLLM 0.26.0 的 CUDA 构建依赖位于这个文件，
+          # 并不存在 requirements/build.txt。
+          python -m pip install \
+            --index-url https://pypi.org/simple \
+            -r requirements/build/cuda.txt
+
+          python - <<'PY'
+          import sys
+          import torch
+
+          print("Python:", sys.version)
+          print("PyTorch:", torch.__version__)
+          print("PyTorch CUDA:", torch.version.cuda)
+
+          if torch.__version__.split("+")[0] != "2.11.0":
+              raise RuntimeError(
+                  f"Expected PyTorch 2.11.0, got {torch.__version__}"
+              )
+
+          if torch.version.cuda != "12.8":
+              raise RuntimeError(
+                  f"Expected PyTorch CUDA 12.8, got {torch.version.cuda}"
+              )
+          PY
+
+      - name: Configure ccache
+        run: |
+          set -euxo pipefail
+
+          mkdir -p /github/home/.cache/ccache
+
+          ccache --set-config=cache_dir=/github/home/.cache/ccache
+          ccache --set-config=max_size=5G
+          ccache --set-config=compression=true
+          ccache --set-config=compression_level=5
+
+          ccache --zero-stats
+          ccache --show-config
+          ccache --show-stats
+
+      - name: Build vLLM wheel
         working-directory: vllm
         env:
           CUDA_HOME: /usr/local/cuda
+          VLLM_TARGET_DEVICE: cuda
+
+          # A100/A800 均为 Ampere compute capability 8.0
           TORCH_CUDA_ARCH_LIST: "8.0"
+
+          # 公共仓库的 ubuntu runner 通常有 4 vCPU。
+          # 3 个并行编译任务在速度和内存之间较稳妥。
           MAX_JOBS: "3"
           NVCC_THREADS: "1"
           CMAKE_BUILD_PARALLEL_LEVEL: "3"
 
-          CCACHE_DIR: /root/.cache/ccache
+          # 明确让 CMake 的 C++ 和 CUDA 编译经过 ccache
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CMAKE_CUDA_COMPILER_LAUNCHER: ccache
+
+          CCACHE_DIR: /github/home/.cache/ccache
           CCACHE_MAXSIZE: 5G
           CCACHE_COMPRESS: "true"
+          CCACHE_COMPRESSLEVEL: "5"
+          CCACHE_BASEDIR: ${{ github.workspace }}/vllm
+          CCACHE_NOHASHDIR: "true"
+
         run: |
           set -euxo pipefail
 
-          ccache --zero-stats
-          ccache --max-size 5G
-
-          free -h
+          echo "CPU cores:"
           nproc
 
+          echo "Memory:"
+          free -h
+
+          echo "Disk:"
+          df -h
+
+          echo "CUDA compiler:"
+          nvcc --version
+
+          # pip wheel 会调用 setuptools + CMake + Ninja。
+          # --no-build-isolation 确保使用上一步安装的 torch 2.11.0+cu128。
           python -m pip wheel . \
             --no-build-isolation \
             --no-deps \
             --wheel-dir dist \
-            -v
+            --verbose
 
-          ccache --show-stats
+          echo "Generated wheels:"
           ls -lh dist
+
+          echo "ccache statistics:"
+          ccache --show-stats
+
+      - name: Verify wheel
+        working-directory: vllm
+        run: |
+          set -euxo pipefail
+
+          WHEEL="$(find dist -maxdepth 1 -type f -name '*.whl' | head -n 1)"
+
+          if [[ -z "${WHEEL}" ]]; then
+            echo "No wheel was generated."
+            exit 1
+          fi
+
+          python -m pip install \
+            --no-deps \
+            --force-reinstall \
+            "${WHEEL}"
+
+          python - <<'PY'
+          import vllm
+
+          print("Installed vLLM version:", vllm.__version__)
+
+          if vllm.__version__ != "0.26.0":
+              raise RuntimeError(
+                  f"Expected vLLM 0.26.0, got {vllm.__version__}"
+              )
+          PY
+
+      # 显式保存 ccache，下一次同版本构建可以复用。
+      # 如果缓存 key 已存在，save action 会跳过重复上传。
+      - name: Save ccache
+        if: always() && steps.restore-ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /github/home/.cache/ccache
+          key: >-
+            vllm-${{ env.VLLM_VERSION }}-torch${{ env.TORCH_VERSION }}-cu128-sm80-cp312-${{ runner.os }}-${{ github.sha }}
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: vllm-${{ env.VLLM_VERSION }}-cu128-cp312-sm80
+          name: vllm-${{ env.VLLM_VERSION }}-torch${{ env.TORCH_VERSION }}-cu128-cp312-sm80
           path: vllm/dist/*.whl
-          retention-days: 14
           if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
