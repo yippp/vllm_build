@@ -1,4 +1,4 @@
-name: Build vLLM cu128 (A100 / A800 / H20)
+name: Build vLLM cu128 (A800 only)
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 600
+    timeout-minutes: 300
 
     container:
       image: nvidia/cuda:12.8.0-devel-ubuntu22.04
@@ -24,7 +24,6 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
           TZ: Asia/Shanghai
         run: |
-          # 避免 tzdata 卡住
           ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
           echo $TZ > /etc/timezone
 
@@ -68,17 +67,22 @@ jobs:
           python -m pip install \
             "cmake>=3.26.1" ninja packaging setuptools-scm setuptools-rust
 
-      - name: Build wheel (A100/A800 + H20)
+      - name: Build wheel (A800 only)
         working-directory: vllm
         env:
-          TORCH_CUDA_ARCH_LIST: "8.0;9.0"
+          # 只编译 A800 / A100 = sm_80
+          TORCH_CUDA_ARCH_LIST: "8.0"
           MAX_JOBS: "1"
           NVCC_THREADS: "1"
         run: |
-          fallocate -l 8G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=8192
-          chmod 600 /swapfile
-          mkswap /swapfile
-          swapon /swapfile
+          # 安全地创建 swap（避免已挂载报错）
+          if ! swapon --show | grep -q '/swapfile'; then
+            rm -f /swapfile
+            fallocate -l 8G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=8192
+            chmod 600 /swapfile
+            mkswap /swapfile
+            swapon /swapfile
+          fi
           free -h
 
           python use_existing_torch.py || true
@@ -98,6 +102,6 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: vllm-${{ env.VLLM_VERSION }}-cu128-cp312-A100-A800-H20
+          name: vllm-${{ env.VLLM_VERSION }}-cu128-cp312-A800
           path: vllm/dist/*.whl
           retention-days: 14
