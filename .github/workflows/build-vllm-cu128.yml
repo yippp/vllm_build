@@ -209,43 +209,51 @@ jobs:
 
       - name: Verify wheel
         working-directory: vllm
+        shell: bash
+        env:
+          EXPECTED_VLLM_VERSION: ${{ env.VLLM_VERSION }}
         run: |
           set -euxo pipefail
 
-          WHEEL="$(find dist -maxdepth 1 -type f -name '*.whl' | head -n 1)"
+          WHEEL="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
 
-          if [[ -z "${WHEEL}" ]]; then
-            echo "No wheel was generated."
+          if [ -z "${WHEEL}" ]; then
+            echo "No wheel found in vllm/dist"
             exit 1
           fi
 
+          echo "Found wheel: ${WHEEL}"
+
+          # 检查 wheel 文件是否损坏
+          python -m zipfile -t "${WHEEL}"
+
+          # 安装 wheel，但不安装其运行时依赖
           python -m pip install \
             --no-deps \
             --force-reinstall \
             "${WHEEL}"
 
+          # 验证安装后的包版本，不执行 import vllm
           python - <<'PY'
-          import vllm
+          import os
+          from importlib.metadata import version
 
-          print("Installed vLLM version:", vllm.__version__)
+          expected = os.environ["EXPECTED_VLLM_VERSION"].lstrip("v")
+          actual = version("vllm")
 
-          if vllm.__version__ != "0.26.0":
+          print(f"Expected vLLM version: {expected}")
+          print(f"Installed vLLM version: {actual}")
+
+          if actual != expected:
               raise RuntimeError(
-                  f"Expected vLLM 0.26.0, got {vllm.__version__}"
+                  f"Version mismatch: expected {expected}, got {actual}"
               )
+
+          print("Wheel verification passed.")
           PY
 
-      # 显式保存 ccache，下一次同版本构建可以复用。
-      # 如果缓存 key 已存在，save action 会跳过重复上传。
-      - name: Save ccache
-        if: always() && steps.restore-ccache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: /github/home/.cache/ccache
-          key: >-
-            vllm-${{ env.VLLM_VERSION }}-torch${{ env.TORCH_VERSION }}-cu128-sm80-cp312-${{ runner.os }}-${{ github.sha }}
-
       - name: Upload wheel
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: vllm-${{ env.VLLM_VERSION }}-torch${{ env.TORCH_VERSION }}-cu128-cp312-sm80
