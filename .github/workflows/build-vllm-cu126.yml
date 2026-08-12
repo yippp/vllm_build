@@ -1,4 +1,4 @@
-name: Build vLLM CUDA 12.9 SM80 (A800)
+name: Build vLLM CUDA 12.6 SM80 (A800)
 
 on:
   workflow_dispatch:
@@ -29,15 +29,15 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-vllm-cu129-${{ inputs.vllm_version }}
+  group: build-vllm-cu126-${{ inputs.vllm_version }}
   cancel-in-progress: false
 
 env:
   PYTHON_VERSION: "3.12"
   TORCH_VERSION: "2.13.0"
   TORCHVISION_VERSION: "0.28.0"
-  TORCH_CUDA_INDEX: "cu129"
-  CUDA_CONTAINER: "nvidia/cuda:12.9.0-devel-ubuntu22.04"
+  TORCH_CUDA_INDEX: "cu126"
+  CUDA_CONTAINER: "nvidia/cuda:12.6.3-devel-ubuntu22.04"
   RUST_TOOLCHAIN: "1.95"
   PROTOC_VERSION: "34.2"
 
@@ -52,7 +52,7 @@ jobs:
         shell: bash
 
     container:
-      image: nvidia/cuda:12.9.0-devel-ubuntu22.04
+      image: nvidia/cuda:12.6.3-devel-ubuntu22.04
       options: --user root
 
     outputs:
@@ -167,12 +167,12 @@ jobs:
         with:
           path: /github/home/.cache/ccache
           key: >-
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-${{ runner.os }}-${{ github.sha }}
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-${{ runner.os }}-
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-
-            vllm-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-${{ runner.os }}-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-
+            vllm-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-
 
       - name: Install PyTorch and build dependencies
         working-directory: vllm
@@ -188,12 +188,12 @@ jobs:
             pip \
             wheel
 
-          # vLLM 0.27.x 要求 torch==2.13.0；官方 release 资产为 cu129
+          # vLLM 0.27.x 要求 torch==2.13.0；本仓库按驱动 ≤12.8 选用 cu126
           python -m pip install \
             "torch==${TORCH_VERSION}" \
             --index-url "https://download.pytorch.org/whl/${TORCH_CUDA_INDEX}"
 
-          # 删除源码构建配置中的 torch 依赖，防止后续 pip 从其他索引替换 cu129 wheel
+          # 删除源码构建配置中的 torch 依赖，防止后续 pip 从其他索引替换 cu126 wheel
           python use_existing_torch.py --prefix
 
           python -m pip install \
@@ -216,9 +216,9 @@ jobs:
                   f"Expected PyTorch {expected_torch}, got {torch.__version__}"
               )
 
-          if torch.version.cuda != "12.9":
+          if torch.version.cuda != "12.6":
               raise RuntimeError(
-                  f"Expected PyTorch CUDA 12.9, got {torch.version.cuda}"
+                  f"Expected PyTorch CUDA 12.6, got {torch.version.cuda}"
               )
           PY
 
@@ -294,7 +294,7 @@ jobs:
           echo "CUDA compiler:"
           nvcc --version
 
-          # --no-build-isolation 确保使用已安装的 torch 2.13.0+cu129
+          # --no-build-isolation 确保使用已安装的 torch 2.13.0+cu126
           python -m pip wheel . \
             --no-build-isolation \
             --no-deps \
@@ -354,7 +354,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-cp312-sm80
+          name: vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-cp312-sm80
           path: vllm/dist/*.whl
           if-no-files-found: error
           retention-days: 30
@@ -372,8 +372,8 @@ jobs:
             | Pin | Value |
             | --- | --- |
             | vLLM | ${{ steps.resolve.outputs.version }} |
-            | PyTorch | ${{ env.TORCH_VERSION }}+cu129 |
-            | CUDA container | nvidia/cuda:12.9.0-devel-ubuntu22.04 |
+            | PyTorch | ${{ env.TORCH_VERSION }}+cu126 |
+            | CUDA container | nvidia/cuda:12.6.3-devel-ubuntu22.04 |
             | Python | ${{ env.PYTHON_VERSION }} |
             | TORCH_CUDA_ARCH_LIST | 8.0 |
 
@@ -388,4 +388,4 @@ jobs:
         with:
           path: /github/home/.cache/ccache
           key: >-
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-${{ runner.os }}-${{ github.sha }}
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-${{ runner.os }}-${{ github.sha }}
