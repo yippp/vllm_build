@@ -2,7 +2,7 @@ name: Watch upstream vLLM releases
 
 # 每 6 小时轮询 vllm-project/vllm 的 latest release。
 # 若本仓库尚无同名 GitHub Release（例如 v0.27.1），则调用
-# build-vllm-cu129.yml 构建 SM80 wheel 并发布。
+# build-vllm-cu126.yml 构建 SM80 wheel 并发布。
 
 on:
   schedule:
@@ -73,7 +73,7 @@ jobs:
     name: Build new upstream version
     needs: check
     if: ${{ needs.check.outputs.should_build == 'true' }}
-    uses: ./.github/workflows/build-vllm-cu129.yml
+    uses: ./.github/workflows/build-vllm-cu126.yml
     with:
       vllm_version: ${{ needs.check.outputs.version }}
       create_release: true
