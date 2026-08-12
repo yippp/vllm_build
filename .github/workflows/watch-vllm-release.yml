@@ -1,0 +1,80 @@
+name: Watch upstream vLLM releases
+
+# 每 6 小时轮询 vllm-project/vllm 的 latest release。
+# 若本仓库尚无同名 GitHub Release（例如 v0.27.1），则调用
+# build-vllm-cu129.yml 构建 SM80 wheel 并发布。
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: watch-vllm-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check for new upstream release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      should_build: ${{ steps.decide.outputs.should_build }}
+      version: ${{ steps.decide.outputs.version }}
+
+    steps:
+      - name: Decide whether to build
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+
+          UPSTREAM_JSON="$(curl --fail --show-error --silent \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/vllm-project/vllm/releases/latest)"
+
+          TAG="$(printf '%s' "${UPSTREAM_JSON}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+          VERSION="${TAG#v}"
+          OUR_TAG="v${VERSION}"
+
+          echo "Upstream latest: ${OUR_TAG}"
+
+          HTTP_CODE="$(curl --silent --output /tmp/our_release.json --write-out '%{http_code}' \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${OUR_TAG}")"
+
+          if [ "${HTTP_CODE}" = "200" ]; then
+            echo "Release ${OUR_TAG} already exists in ${GITHUB_REPOSITORY}; skip build."
+            echo "should_build=false" >> "${GITHUB_OUTPUT}"
+            echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ "${HTTP_CODE}" != "404" ]; then
+            echo "Unexpected response checking local release: HTTP ${HTTP_CODE}"
+            cat /tmp/our_release.json || true
+            exit 1
+          fi
+
+          echo "No local release for ${OUR_TAG}; will build."
+          echo "should_build=true" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+  build:
+    name: Build new upstream version
+    needs: check
+    if: ${{ needs.check.outputs.should_build == 'true' }}
+    uses: ./.github/workflows/build-vllm-cu129.yml
+    with:
+      vllm_version: ${{ needs.check.outputs.version }}
+      create_release: true
+    secrets: inherit

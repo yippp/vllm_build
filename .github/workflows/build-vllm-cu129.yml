@@ -1,0 +1,391 @@
+name: Build vLLM CUDA 12.9 SM80 (A800)
+
+on:
+  workflow_dispatch:
+    inputs:
+      vllm_version:
+        description: "vLLM version to build (e.g. 0.27.1, or latest)"
+        required: false
+        default: "0.27.1"
+        type: string
+      create_release:
+        description: "Upload wheel as a GitHub Release tagged like upstream (vX.Y.Z)"
+        required: false
+        default: true
+        type: boolean
+  workflow_call:
+    inputs:
+      vllm_version:
+        description: "vLLM version to build (e.g. 0.27.1, or latest)"
+        required: true
+        type: string
+      create_release:
+        description: "Upload wheel as a GitHub Release tagged like upstream (vX.Y.Z)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-vllm-cu129-${{ inputs.vllm_version }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  TORCH_VERSION: "2.13.0"
+  TORCHVISION_VERSION: "0.28.0"
+  TORCH_CUDA_INDEX: "cu129"
+  CUDA_CONTAINER: "nvidia/cuda:12.9.0-devel-ubuntu22.04"
+  RUST_TOOLCHAIN: "1.95"
+  PROTOC_VERSION: "34.2"
+
+jobs:
+  build:
+    name: Build vLLM wheel (SM80)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    defaults:
+      run:
+        shell: bash
+
+    container:
+      image: nvidia/cuda:12.9.0-devel-ubuntu22.04
+      options: --user root
+
+    outputs:
+      resolved_version: ${{ steps.resolve.outputs.version }}
+
+    steps:
+      - name: Install system dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euxo pipefail
+
+          apt-get update
+
+          apt-get install -y --no-install-recommends \
+            software-properties-common \
+            ca-certificates \
+            curl \
+            git \
+            build-essential \
+            ccache \
+            ninja-build \
+            pkg-config \
+            unzip \
+            libssl-dev
+
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+
+          apt-get install -y --no-install-recommends \
+            python3.12 \
+            python3.12-dev \
+            python3.12-venv
+
+          curl --fail --show-error --silent \
+            https://bootstrap.pypa.io/get-pip.py \
+            | python3.12
+
+          ln -sf /usr/bin/python3.12 /usr/local/bin/python
+          ln -sf /usr/bin/python3.12 /usr/local/bin/python3
+
+          # 安装与上游 Docker 一致的 pinned protoc，供 Rust frontend 使用
+          ARCH="$(uname -m)"
+          case "${ARCH}" in
+            aarch64|arm64) URL_ARCH="aarch_64" ;;
+            x86_64|amd64) URL_ARCH="x86_64" ;;
+            *) echo "Unsupported arch: ${ARCH}"; exit 1 ;;
+          esac
+          PROTOC_URL="https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${URL_ARCH}.zip"
+          TMPDIR="$(mktemp -d)"
+          curl --fail --show-error --silent -L -o "${TMPDIR}/protoc.zip" "${PROTOC_URL}"
+          unzip -q -o "${TMPDIR}/protoc.zip" -d /usr/local
+          rm -rf "${TMPDIR}"
+
+          # Rust toolchain（setuptools-rust / build_rust.sh）
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain "${RUST_TOOLCHAIN}"
+          # shellcheck disable=SC1091
+          source "${HOME}/.cargo/env"
+          rustc --version
+          cargo --version
+
+          python --version
+          python -m pip --version
+          nvcc --version
+          gcc --version
+          ninja --version
+          ccache --version
+          protoc --version
+
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Resolve vLLM version
+        id: resolve
+        env:
+          INPUT_VERSION: ${{ inputs.vllm_version }}
+        run: |
+          set -euxo pipefail
+
+          INPUT_VERSION="${INPUT_VERSION:-0.27.1}"
+          INPUT_VERSION="${INPUT_VERSION#v}"
+
+          if [ "${INPUT_VERSION}" = "latest" ]; then
+            TAG="$(curl --fail --show-error --silent \
+              https://api.github.com/repos/vllm-project/vllm/releases/latest \
+              | python -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+            VERSION="${TAG#v}"
+          else
+            VERSION="${INPUT_VERSION}"
+          fi
+
+          if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Invalid vLLM version: ${VERSION}"
+            exit 1
+          fi
+
+          echo "Resolved vLLM version: ${VERSION}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout vLLM source
+        uses: actions/checkout@v4
+        with:
+          repository: vllm-project/vllm
+          ref: v${{ steps.resolve.outputs.version }}
+          path: vllm
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Restore ccache
+        id: restore-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: /github/home/.cache/ccache
+          key: >-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-${{ runner.os }}-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-
+            vllm-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-
+
+      - name: Install PyTorch and build dependencies
+        working-directory: vllm
+        env:
+          VLLM_VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euxo pipefail
+
+          # shellcheck disable=SC1091
+          source "${HOME}/.cargo/env"
+
+          python -m pip install --upgrade \
+            pip \
+            wheel
+
+          # vLLM 0.27.x 要求 torch==2.13.0；官方 release 资产为 cu129
+          python -m pip install \
+            "torch==${TORCH_VERSION}" \
+            --index-url "https://download.pytorch.org/whl/${TORCH_CUDA_INDEX}"
+
+          # 删除源码构建配置中的 torch 依赖，防止后续 pip 从其他索引替换 cu129 wheel
+          python use_existing_torch.py --prefix
+
+          python -m pip install \
+            --index-url https://pypi.org/simple \
+            -r requirements/build/cuda.txt \
+            -r requirements/build/rust.txt
+
+          python - <<'PY'
+          import os
+          import sys
+          import torch
+
+          expected_torch = os.environ["TORCH_VERSION"]
+          print("Python:", sys.version)
+          print("PyTorch:", torch.__version__)
+          print("PyTorch CUDA:", torch.version.cuda)
+
+          if torch.__version__.split("+")[0] != expected_torch:
+              raise RuntimeError(
+                  f"Expected PyTorch {expected_torch}, got {torch.__version__}"
+              )
+
+          if torch.version.cuda != "12.9":
+              raise RuntimeError(
+                  f"Expected PyTorch CUDA 12.9, got {torch.version.cuda}"
+              )
+          PY
+
+      - name: Configure ccache
+        run: |
+          set -euxo pipefail
+
+          mkdir -p /github/home/.cache/ccache
+
+          ccache --set-config=cache_dir=/github/home/.cache/ccache
+          ccache --set-config=max_size=5G
+          ccache --set-config=compression=true
+          ccache --set-config=compression_level=5
+
+          ccache --zero-stats
+          ccache --show-config
+          ccache --show-stats
+
+      - name: Build Rust frontend
+        working-directory: vllm
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euxo pipefail
+
+          # shellcheck disable=SC1091
+          source "${HOME}/.cargo/env"
+
+          # 预编译 Rust 产物；setup.py 检测到后会直接打包，跳过二次编译
+          bash build_rust.sh
+
+          ls -lh vllm/vllm-rs vllm/_rust_*.so
+
+      - name: Build vLLM wheel
+        working-directory: vllm
+        env:
+          CUDA_HOME: /usr/local/cuda
+          VLLM_TARGET_DEVICE: cuda
+          # 固定 wheel 版本号，避免 shallow clone 下 setuptools-scm 生成 .dev0
+          VLLM_VERSION_OVERRIDE: ${{ steps.resolve.outputs.version }}
+
+          # A100/A800 均为 Ampere compute capability 8.0
+          TORCH_CUDA_ARCH_LIST: "8.0"
+
+          # 公共仓库的 ubuntu runner 通常有 4 vCPU
+          MAX_JOBS: "3"
+          NVCC_THREADS: "1"
+          CMAKE_BUILD_PARALLEL_LEVEL: "3"
+          CARGO_BUILD_JOBS: "2"
+
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+          CMAKE_CUDA_COMPILER_LAUNCHER: ccache
+
+          CCACHE_DIR: /github/home/.cache/ccache
+          CCACHE_MAXSIZE: 5G
+          CCACHE_COMPRESS: "true"
+          CCACHE_COMPRESSLEVEL: "5"
+          CCACHE_BASEDIR: ${{ github.workspace }}/vllm
+          CCACHE_NOHASHDIR: "true"
+        run: |
+          set -euxo pipefail
+
+          # shellcheck disable=SC1091
+          source "${HOME}/.cargo/env"
+
+          echo "CPU cores:"
+          nproc
+          echo "Memory:"
+          free -h
+          echo "Disk:"
+          df -h
+          echo "CUDA compiler:"
+          nvcc --version
+
+          # --no-build-isolation 确保使用已安装的 torch 2.13.0+cu129
+          python -m pip wheel . \
+            --no-build-isolation \
+            --no-deps \
+            --wheel-dir dist \
+            --verbose
+
+          echo "Generated wheels:"
+          ls -lh dist
+
+          echo "ccache statistics:"
+          ccache --show-stats
+
+      - name: Verify wheel
+        working-directory: vllm
+        env:
+          EXPECTED_VLLM_VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euxo pipefail
+
+          WHEEL="$(find dist -maxdepth 1 -type f -name '*.whl' -print -quit)"
+
+          if [ -z "${WHEEL}" ]; then
+            echo "No wheel found in vllm/dist"
+            exit 1
+          fi
+
+          echo "Found wheel: ${WHEEL}"
+
+          python -m zipfile -t "${WHEEL}"
+
+          python -m pip install \
+            --no-deps \
+            --force-reinstall \
+            "${WHEEL}"
+
+          # 仅校验包元数据版本，不 import vllm（避免加载 CUDA kernels）
+          python - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          expected = os.environ["EXPECTED_VLLM_VERSION"].lstrip("v")
+          actual = version("vllm")
+          actual_base = actual.split("+")[0]
+
+          print(f"Expected vLLM version: {expected}")
+          print(f"Installed vLLM version: {actual}")
+
+          if actual_base != expected:
+              raise RuntimeError(
+                  f"Version mismatch: expected {expected}, got {actual}"
+              )
+
+          print("Wheel verification passed.")
+          PY
+
+      - name: Upload wheel artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-cp312-sm80
+          path: vllm/dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Create GitHub Release
+        if: ${{ success() && inputs.create_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.resolve.outputs.version }}
+          name: v${{ steps.resolve.outputs.version }}
+          body: |
+            SM80-only (A800/A100) vLLM wheel built from [vllm-project/vllm@v${{ steps.resolve.outputs.version }}](https://github.com/vllm-project/vllm/releases/tag/v${{ steps.resolve.outputs.version }}).
+
+            | Pin | Value |
+            | --- | --- |
+            | vLLM | ${{ steps.resolve.outputs.version }} |
+            | PyTorch | ${{ env.TORCH_VERSION }}+cu129 |
+            | CUDA container | nvidia/cuda:12.9.0-devel-ubuntu22.04 |
+            | Python | ${{ env.PYTHON_VERSION }} |
+            | TORCH_CUDA_ARCH_LIST | 8.0 |
+
+            Artifact also available from the Actions run that produced this release.
+          files: vllm/dist/*.whl
+          fail_on_unmatched_files: true
+          make_latest: true
+
+      - name: Save ccache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: /github/home/.cache/ccache
+          key: >-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu129-sm80-cp312-${{ runner.os }}-${{ github.sha }}
