@@ -17,7 +17,7 @@
 | Python | `3.12` |
 | GPU arch | `8.0 9.0`（A800 SM80 + H20 SM90，单一 wheel） |
 
-构建阶段使用上游的 `requirements/build/cuda.txt`、`requirements/build/rust.txt` 与 `use_existing_torch.py`；预编译 Rust frontend 后打 wheel。
+构建阶段使用上游的 `requirements/build/cuda.txt`、`requirements/build/rust.txt` 与 `use_existing_torch.py`；预编译 Rust frontend 后打 wheel。GitHub-hosted runner 内存约 16GB，dual-arch 构建将 `MAX_JOBS` / `CMAKE_BUILD_PARALLEL_LEVEL` 设为 2，并在 CUDA 容器内启用 swapfile，以降低 nvcc 峰值内存。
 
 ### 驱动与 CUDA 版本
 

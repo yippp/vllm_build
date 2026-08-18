@@ -55,7 +55,11 @@ jobs:
 
     container:
       image: nvidia/cuda:12.6.3-devel-ubuntu22.04
-      options: --user root
+      # --privileged：容器内 swapon 才能向宿主机内核注册 swapfile。
+      # 仅在宿主机建 swap、不给容器 SYS_ADMIN 时，编译进程用不到这块 swap。
+      # GitHub-hosted container job 的 cgroup 仍可能在宿主机 RAM+swap 耗尽时 137；
+      # 若 swapon 失败，则只靠 MAX_JOBS=2 压峰值。
+      options: --user root --privileged
 
     outputs:
       resolved_version: ${{ steps.resolve.outputs.version }}
@@ -79,6 +83,7 @@ jobs:
             ninja-build \
             pkg-config \
             unzip \
+            util-linux \
             libssl-dev
 
           add-apt-repository -y ppa:deadsnakes/ppa
@@ -254,6 +259,62 @@ jobs:
 
           ls -lh vllm/vllm-rs vllm/_rust_*.so
 
+      - name: Enable swapfile for dual-arch nvcc
+        run: |
+          set -euxo pipefail
+
+          echo "Memory before swap:"
+          free -h
+          echo "Disk before swap:"
+          df -h
+
+          # /__w 是 runner 工作目录的 host bind-mount（ext4）。
+          # overlay 根文件系统上的 swapfile 常被 swapon 拒绝（holes / 不支持的 extent）。
+          # 失败 run 在编译开始时约 15Gi RAM + 3Gi 已有 swap、/__w 约 71Gi 空闲。
+          if [ -d /__w ]; then
+            SWAPFILE="/__w/swapfile"
+          elif [ -n "${GITHUB_WORKSPACE:-}" ]; then
+            SWAPFILE="${GITHUB_WORKSPACE}/../swapfile"
+          else
+            SWAPFILE="/github/home/swapfile"
+          fi
+          SWAP_GIB=16
+
+          mkdir -p "$(dirname "${SWAPFILE}")"
+          rm -f "${SWAPFILE}"
+
+          enabled=0
+          if fallocate -l "${SWAP_GIB}G" "${SWAPFILE}" \
+            && chmod 600 "${SWAPFILE}" \
+            && mkswap "${SWAPFILE}" \
+            && swapon "${SWAPFILE}"; then
+            enabled=1
+          else
+            swapoff "${SWAPFILE}" 2>/dev/null || true
+            rm -f "${SWAPFILE}"
+          fi
+
+          if [ "${enabled}" -eq 0 ]; then
+            echo "fallocate/swapon failed; allocating with dd"
+            rm -f "${SWAPFILE}"
+            dd if=/dev/zero of="${SWAPFILE}" bs=1M count=$((SWAP_GIB * 1024)) status=progress
+            chmod 600 "${SWAPFILE}"
+            mkswap "${SWAPFILE}"
+            if ! swapon "${SWAPFILE}"; then
+              echo "::warning::swapon ${SWAPFILE} failed. Dual-arch nvcc may still OOM. This job needs container --privileged (or --cap-add=SYS_ADMIN) so the compile process can use the swapfile. Continuing with MAX_JOBS=2."
+              rm -f "${SWAPFILE}"
+              free -h
+              exit 0
+            fi
+          fi
+
+          sysctl -w vm.swappiness=80 || true
+
+          echo "Swap devices:"
+          swapon --show
+          echo "Memory after swap:"
+          free -h
+
       - name: Build vLLM wheel
         working-directory: vllm
         env:
@@ -266,10 +327,11 @@ jobs:
           # vLLM 0.27.1 / PyTorch 使用空格分隔（上游 Dockerfile: "7.5 8.0 ... 9.0 ..."）。
           TORCH_CUDA_ARCH_LIST: "8.0 9.0"
 
-          # 公共仓库的 ubuntu runner 通常有 4 vCPU
-          MAX_JOBS: "3"
+          # 公共 ubuntu runner 约 16GB RAM。dual-arch 下单次 nvcc 峰值约为单 arch 的两倍。
+          # MAX_JOBS=3 已在 run 32125710803 上 137；设为 2 以降低峰值内存，1 可能超过 6h 上限。
+          MAX_JOBS: "2"
           NVCC_THREADS: "1"
-          CMAKE_BUILD_PARALLEL_LEVEL: "3"
+          CMAKE_BUILD_PARALLEL_LEVEL: "2"
           CARGO_BUILD_JOBS: "2"
 
           CMAKE_C_COMPILER_LAUNCHER: ccache
@@ -388,8 +450,10 @@ jobs:
           fail_on_unmatched_files: true
           make_latest: true
 
+      # 编译失败后仍写入 ccache，重试可复用已完成的 .o。
+      # 容器被 cgroup OOM 直接杀掉时后续 step 无法执行，因此依赖 swap + MAX_JOBS=2 避免容器退出。
       - name: Save ccache
-        if: ${{ !cancelled() }}
+        if: ${{ always() && !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: /github/home/.cache/ccache
