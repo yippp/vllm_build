@@ -1,4 +1,4 @@
-name: Build vLLM CUDA 12.6 SM80 (A800)
+name: Build vLLM CUDA 12.6 SM80+SM90 (A800+H20)
 
 on:
   workflow_dispatch:
@@ -43,9 +43,11 @@ env:
 
 jobs:
   build:
-    name: Build vLLM wheel (SM80)
+    name: Build vLLM wheel (SM80+SM90)
     runs-on: ubuntu-22.04
-    timeout-minutes: 350
+    # Dual-arch (SM80+SM90) compile is slower than SM80-only (~3h).
+    # Public GitHub-hosted ubuntu jobs cap at ~6h; 360 is the safe upper bound.
+    timeout-minutes: 360
 
     defaults:
       run:
@@ -167,12 +169,12 @@ jobs:
         with:
           path: /github/home/.cache/ccache
           key: >-
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-${{ runner.os }}-${{ github.sha }}
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-sm90-cp312-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-${{ runner.os }}-
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-
-            vllm-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-sm90-cp312-${{ runner.os }}-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-sm90-cp312-
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-sm90-
+            vllm-torch${{ env.TORCH_VERSION }}-cu126-sm80-sm90-cp312-
 
       - name: Install PyTorch and build dependencies
         working-directory: vllm
@@ -260,8 +262,9 @@ jobs:
           # 固定 wheel 版本号，避免 shallow clone 下 setuptools-scm 生成 .dev0
           VLLM_VERSION_OVERRIDE: ${{ steps.resolve.outputs.version }}
 
-          # A100/A800 均为 Ampere compute capability 8.0
-          TORCH_CUDA_ARCH_LIST: "8.0"
+          # A800/A100 = Ampere SM80；H20 = Hopper SM90。
+          # vLLM 0.27.1 / PyTorch 使用空格分隔（上游 Dockerfile: "7.5 8.0 ... 9.0 ..."）。
+          TORCH_CUDA_ARCH_LIST: "8.0 9.0"
 
           # 公共仓库的 ubuntu runner 通常有 4 vCPU
           MAX_JOBS: "3"
@@ -354,7 +357,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-cp312-sm80
+          name: vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-cp312-sm80-sm90
           path: vllm/dist/*.whl
           if-no-files-found: error
           retention-days: 30
@@ -367,7 +370,9 @@ jobs:
           tag_name: v${{ steps.resolve.outputs.version }}
           name: v${{ steps.resolve.outputs.version }}
           body: |
-            SM80-only (A800/A100) vLLM wheel built from [vllm-project/vllm@v${{ steps.resolve.outputs.version }}](https://github.com/vllm-project/vllm/releases/tag/v${{ steps.resolve.outputs.version }}).
+            Dual-arch vLLM wheel for A800 (SM80 / Ampere) and H20 (SM90 / Hopper), built from [vllm-project/vllm@v${{ steps.resolve.outputs.version }}](https://github.com/vllm-project/vllm/releases/tag/v${{ steps.resolve.outputs.version }}).
+
+            One wheel covers both GPUs (`TORCH_CUDA_ARCH_LIST=8.0 9.0`).
 
             | Pin | Value |
             | --- | --- |
@@ -375,7 +380,8 @@ jobs:
             | PyTorch | ${{ env.TORCH_VERSION }}+cu126 |
             | CUDA container | nvidia/cuda:12.6.3-devel-ubuntu22.04 |
             | Python | ${{ env.PYTHON_VERSION }} |
-            | TORCH_CUDA_ARCH_LIST | 8.0 |
+            | TORCH_CUDA_ARCH_LIST | 8.0 9.0 |
+            | GPUs | A800 (SM80) and H20 (SM90) |
 
             Artifact also available from the Actions run that produced this release.
           files: vllm/dist/*.whl
@@ -388,4 +394,4 @@ jobs:
         with:
           path: /github/home/.cache/ccache
           key: >-
-            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-cp312-${{ runner.os }}-${{ github.sha }}
+            vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-sm80-sm90-cp312-${{ runner.os }}-${{ github.sha }}
