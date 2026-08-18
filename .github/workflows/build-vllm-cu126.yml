@@ -429,12 +429,17 @@ jobs:
         if: ${{ success() && inputs.create_release }}
         uses: softprops/action-gh-release@v2
         with:
+          # 单一 tag vX.Y.Z；标题写明 dual-arch，避免与同 tag 上旧的 SM80-only 资源混淆
           tag_name: v${{ steps.resolve.outputs.version }}
-          name: v${{ steps.resolve.outputs.version }}
+          name: v${{ steps.resolve.outputs.version }} dual-arch SM80+SM90 (A800 + H20)
           body: |
-            Dual-arch vLLM wheel for A800 (SM80 / Ampere) and H20 (SM90 / Hopper), built from [vllm-project/vllm@v${{ steps.resolve.outputs.version }}](https://github.com/vllm-project/vllm/releases/tag/v${{ steps.resolve.outputs.version }}).
+            **dual-arch SM80+SM90 (A800 + H20)**
 
-            One wheel covers both GPUs (`TORCH_CUDA_ARCH_LIST=8.0 9.0`).
+            This **single** wheel is built with `TORCH_CUDA_ARCH_LIST=8.0 9.0` for A800 (SM80 / Ampere) and H20 (SM90 / Hopper).
+
+            Uploading this asset **replaces** any earlier SM80-only wheel on the same tag `v${{ steps.resolve.outputs.version }}`. A previously downloaded SM80-only `v${{ steps.resolve.outputs.version }}` `.whl` has no SM90 gencode and will fail on H20.
+
+            Built from [vllm-project/vllm@v${{ steps.resolve.outputs.version }}](https://github.com/vllm-project/vllm/releases/tag/v${{ steps.resolve.outputs.version }}).
 
             | Pin | Value |
             | --- | --- |
@@ -444,6 +449,7 @@ jobs:
             | Python | ${{ env.PYTHON_VERSION }} |
             | TORCH_CUDA_ARCH_LIST | 8.0 9.0 |
             | GPUs | A800 (SM80) and H20 (SM90) |
+            | Wheels / tags | one wheel, one tag `v${{ steps.resolve.outputs.version }}` |
 
             Artifact also available from the Actions run that produced this release.
           files: vllm/dist/*.whl
