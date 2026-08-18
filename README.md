@@ -2,7 +2,7 @@
 
 为 **A800（SM80 / Ampere）** 与 **H20（SM90 / Hopper）** 构建同一个 [vLLM](https://github.com/vllm-project/vllm) CUDA wheel。`TORCH_CUDA_ARCH_LIST=8.0 9.0`，一份 wheel 同时用于两种 GPU。
 
-当前默认目标：**vLLM 0.27.1**，构建与运行时 CUDA 目标为 **cu126 / CUDA 12.6**（适配驱动 CUDA ≤ 12.8；cu129 / CUDA 12.9 不可用）。
+当前默认目标：**vLLM 0.27.1**。编译使用 CUDA 12.8 toolkit（与本机驱动 CUDA 12.8 对齐）；运行时仍使用 cu126 PyTorch wheels。cu129 / CUDA 12.9 不可用。
 
 ## 构建固定版本（0.27.x）
 
@@ -13,7 +13,7 @@
 | torchvision（运行时建议） | `0.28.0+cu126` |
 | torchaudio（上游 v0.27.1 固定） | `2.11.0+cu126` |
 | Triton（运行时建议） | `3.7.1` |
-| CUDA 构建容器 | `nvidia/cuda:12.6.3-devel-ubuntu22.04` |
+| CUDA 构建容器 | `nvidia/cuda:12.8.0-devel-ubuntu22.04` |
 | Python | `3.12` |
 | GPU arch | `8.0 9.0`（A800 SM80 + H20 SM90，单一 wheel） |
 
@@ -24,7 +24,8 @@
 | 项目 | 说明 |
 | --- | --- |
 | 本机 NVIDIA 驱动 | CUDA **12.8**（用户环境） |
-| 构建 / 运行时 toolkit | **cu126 / CUDA 12.6**（≤ 驱动能力） |
+| 编译 toolkit | **CUDA 12.8**（`nvidia/cuda:12.8.0-devel-ubuntu22.04`） |
+| 运行时 PyTorch | **cu126 / CUDA 12.6** wheels |
 | 不可用 | cu129 / CUDA 12.9（超过驱动 12.8） |
 
 vLLM dual-arch wheel 在本仓库构建完成后，从 [Releases](../../releases) 或对应 Actions Artifact 下载。

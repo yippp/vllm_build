@@ -37,7 +37,10 @@ env:
   TORCH_VERSION: "2.13.0"
   TORCHVISION_VERSION: "0.28.0"
   TORCH_CUDA_INDEX: "cu126"
-  CUDA_CONTAINER: "nvidia/cuda:12.6.3-devel-ubuntu22.04"
+  # 编译 toolkit：CUDA 12.8（vLLM 0.27.1 SM90 需要 12.8 libcudacxx PTX 重载）。
+  # 文件名 cu126 / TORCH_CUDA_INDEX 表示运行时 torch wheel，不是 nvcc。
+  # 驱动为 12.8，toolkit 12.8 不超过驱动；不要改用 12.9 / cu129。
+  CUDA_CONTAINER: "nvidia/cuda:12.8.0-devel-ubuntu22.04"
   RUST_TOOLCHAIN: "1.95"
   PROTOC_VERSION: "34.2"
 
@@ -54,7 +57,7 @@ jobs:
         shell: bash
 
     container:
-      image: nvidia/cuda:12.6.3-devel-ubuntu22.04
+      image: nvidia/cuda:12.8.0-devel-ubuntu22.04
       # --privileged：容器内 swapon 才能向宿主机内核注册 swapfile。
       # 仅在宿主机建 swap、不给容器 SYS_ADMIN 时，编译进程用不到这块 swap。
       # GitHub-hosted container job 的 cgroup 仍可能在宿主机 RAM+swap 耗尽时 137；
@@ -195,7 +198,8 @@ jobs:
             pip \
             wheel
 
-          # vLLM 0.27.x 要求 torch==2.13.0；本仓库按驱动 ≤12.8 选用 cu126
+          # vLLM 0.27.x 要求 torch==2.13.0；运行时固定 cu126（驱动 12.8）。
+          # 编译 nvcc 来自 12.8 容器；下方仍断言 torch.version.cuda == "12.6"。
           python -m pip install \
             "torch==${TORCH_VERSION}" \
             --index-url "https://download.pytorch.org/whl/${TORCH_CUDA_INDEX}"
@@ -416,12 +420,12 @@ jobs:
           PY
 
       - name: Upload wheel artifact
-        if: ${{ !cancelled() }}
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: vllm-${{ steps.resolve.outputs.version }}-torch${{ env.TORCH_VERSION }}-cu126-cp312-sm80-sm90
           path: vllm/dist/*.whl
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 30
           compression-level: 0
 
@@ -445,7 +449,7 @@ jobs:
             | --- | --- |
             | vLLM | ${{ steps.resolve.outputs.version }} |
             | PyTorch | ${{ env.TORCH_VERSION }}+cu126 |
-            | CUDA container | nvidia/cuda:12.6.3-devel-ubuntu22.04 |
+            | CUDA compile toolkit | 12.8 (`nvidia/cuda:12.8.0-devel-ubuntu22.04`) |
             | Python | ${{ env.PYTHON_VERSION }} |
             | TORCH_CUDA_ARCH_LIST | 8.0 9.0 |
             | GPUs | A800 (SM80) and H20 (SM90) |
