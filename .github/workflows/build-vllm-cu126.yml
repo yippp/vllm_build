@@ -171,6 +171,31 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
+      - name: Disable optional cooperative_topk kernel
+        working-directory: vllm
+        run: |
+          set -euxo pipefail
+
+          # CUDA 12.8 libcudacxx lacks the sem_relaxed PTX overloads this
+          # optional DSA-indexer kernel needs.
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          cmake = Path("CMakeLists.txt")
+          text = cmake.read_text(encoding="utf-8")
+          pattern = re.compile(r"if\s*\(\s*COOPERATIVE_TOPK_ARCHS\s*\)")
+          patched, n = pattern.subn("if(FALSE AND COOPERATIVE_TOPK_ARCHS)", text)
+          if n == 0:
+              raise SystemExit(
+                  "CMakeLists.txt has no if(COOPERATIVE_TOPK_ARCHS) gates to disable"
+              )
+          cmake.write_text(patched, encoding="utf-8")
+          print(f"Disabled cooperative_topk at {n} CMake gate(s)")
+          PY
+
+          grep -n 'FALSE AND COOPERATIVE_TOPK_ARCHS' CMakeLists.txt
+
       - name: Restore ccache
         id: restore-ccache
         uses: actions/cache/restore@v4
