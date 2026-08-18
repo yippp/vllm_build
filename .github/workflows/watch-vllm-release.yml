@@ -2,7 +2,7 @@ name: Watch upstream vLLM releases
 
 # 每 6 小时轮询 vllm-project/vllm 的 latest release。
 # 若本仓库尚无同名 GitHub Release（例如 v0.27.1），则调用
-# build-vllm-cu126.yml 构建 SM80 wheel 并发布。
+# build-vllm-cu126.yml 构建一份 dual-arch wheel（A800 SM80 + H20 SM90）并发布。
 
 on:
   schedule:
