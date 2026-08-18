@@ -2,7 +2,7 @@
 
 为 **A800（SM80 / Ampere）** 与 **H20（SM90 / Hopper）** 构建同一个 [vLLM](https://github.com/vllm-project/vllm) CUDA wheel。`TORCH_CUDA_ARCH_LIST=8.0 9.0`，一份 wheel 同时用于两种 GPU。
 
-当前默认目标：**vLLM 0.27.1**。编译使用 CUDA 12.8 toolkit（与本机驱动 CUDA 12.8 对齐）；运行时仍使用 cu126 PyTorch wheels。cu129 / CUDA 12.9 不可用。
+当前默认目标：**vLLM 0.27.1**。编译使用 CUDA 12.8 toolkit（与本机驱动 CUDA 12.8 对齐）；运行时仍使用 cu126 PyTorch wheels。cu129 / CUDA 12.9 不可用。本构建省略可选的 cooperative_topk kernel，因其需要 CUDA 13 libcudacxx。
 
 ## 构建固定版本（0.27.x）
 
