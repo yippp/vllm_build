@@ -34,23 +34,51 @@ jobs:
         run: |
           set -euxo pipefail
 
-          UPSTREAM_JSON="$(curl --fail --show-error --silent \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/vllm-project/vllm/releases/latest)"
+          # 上游与本仓库 API 都带 token，避免 Actions 共享出口 IP 的未认证限流（403）。
+          fetch_json() {
+            local url="$1"
+            local out="$2"
+            local attempt http_code
+            for attempt in 1 2 3; do
+              http_code="$(curl --silent --output "${out}" --write-out '%{http_code}' \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                "${url}" || true)"
+              if [ "${http_code}" = "200" ] || [ "${http_code}" = "404" ]; then
+                echo "${http_code}"
+                return 0
+              fi
+              echo "HTTP ${http_code} for ${url} (attempt ${attempt}/3)" >&2
+              if [ "${attempt}" -lt 3 ] && { [ "${http_code}" = "403" ] || [ "${http_code}" = "429" ]; }; then
+                sleep $((10 * attempt))
+                continue
+              fi
+              echo "Unexpected response for ${url}: HTTP ${http_code}" >&2
+              cat "${out}" >&2 || true
+              return 1
+            done
+            return 1
+          }
 
-          TAG="$(printf '%s' "${UPSTREAM_JSON}" \
-            | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')"
+          UPSTREAM_CODE="$(fetch_json \
+            https://api.github.com/repos/vllm-project/vllm/releases/latest \
+            /tmp/upstream_release.json)"
+          if [ "${UPSTREAM_CODE}" != "200" ]; then
+            echo "Failed to fetch upstream latest release: HTTP ${UPSTREAM_CODE}"
+            cat /tmp/upstream_release.json || true
+            exit 1
+          fi
+
+          TAG="$(python3 -c 'import json; print(json.load(open("/tmp/upstream_release.json"))["tag_name"])')"
           VERSION="${TAG#v}"
           OUR_TAG="v${VERSION}"
 
           echo "Upstream latest: ${OUR_TAG}"
 
-          HTTP_CODE="$(curl --silent --output /tmp/our_release.json --write-out '%{http_code}' \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${OUR_TAG}")"
+          HTTP_CODE="$(fetch_json \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${OUR_TAG}" \
+            /tmp/our_release.json)"
 
           if [ "${HTTP_CODE}" = "200" ]; then
             echo "Release ${OUR_TAG} already exists in ${GITHUB_REPOSITORY}; skip build."
