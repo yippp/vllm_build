@@ -1,12 +1,11 @@
 name: Watch upstream vLLM releases
 
-# 每 6 小时轮询 vllm-project/vllm 的 latest release。
-# 若本仓库尚无同名 GitHub Release（例如 v0.27.1），则调用
-# build-vllm-cu126.yml 构建一份 dual-arch wheel（A800 SM80 + H20 SM90）并发布。
+# 2026-09-23：自编译自动轮询已停用。
+# 用户驱动已升至 CUDA 13.2，改用官方 vLLM cu130（PyPI 默认）；无官方 cu132。
+# 勿重新加回 schedule，除非用户明确要求恢复自编译。
+# 保留 workflow_dispatch，仅供极少数手动排查；默认不要跑。
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 permissions:
